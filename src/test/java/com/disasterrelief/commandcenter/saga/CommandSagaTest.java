@@ -101,17 +101,12 @@ class CommandSagaTest {
                     .clock(fixedClock)
                     .build();
 
-            ExecutorService executor = Executors.newFixedThreadPool(2);
-            try {
+            try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
                 executor.submit(() -> saga.handle(new CommandAcknowledgedEvent(saga.getCommandId(), saga.getTeamId(), member1, now)));
                 executor.submit(() -> saga.handle(new CommandAcknowledgedEvent(saga.getCommandId(), saga.getTeamId(), member2, now)));
                 executor.shutdown();
                 boolean terminated = executor.awaitTermination(1, TimeUnit.SECONDS);
                 if (!terminated) {
-                    executor.shutdownNow();
-                }
-            } finally {
-                if (!executor.isShutdown()) {
                     executor.shutdownNow();
                 }
             }
