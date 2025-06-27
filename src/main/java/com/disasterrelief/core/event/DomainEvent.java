@@ -1,4 +1,4 @@
-package com.disasterrelief.commandcenter.domain.event;
+package com.disasterrelief.core.event;
 
 import java.time.Instant;
 import java.util.UUID;

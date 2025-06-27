@@ -2,6 +2,7 @@ package com.disasterrelief.commandcenter.domain.event;
 
 
 import com.disasterrelief.commandcenter.domain.entity.TeamMember;
+import com.disasterrelief.core.event.DomainEvent;
 
 import java.time.Instant;
 import java.util.List;

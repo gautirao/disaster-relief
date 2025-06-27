@@ -2,7 +2,7 @@ package com.disasterrelief.commandcenter.domain.aggregate;
 
 import com.disasterrelief.commandcenter.domain.command.CreateTeamCommand;
 import com.disasterrelief.commandcenter.domain.entity.TeamMember;
-import com.disasterrelief.commandcenter.domain.event.DomainEvent;
+import com.disasterrelief.core.event.DomainEvent;
 import com.disasterrelief.commandcenter.domain.event.TeamCreatedEvent;
 
 import java.util.*;

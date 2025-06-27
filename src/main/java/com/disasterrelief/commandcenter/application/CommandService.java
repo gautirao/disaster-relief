@@ -3,7 +3,7 @@ package com.disasterrelief.commandcenter.application;
 import com.disasterrelief.commandcenter.domain.aggregate.CommandAggregate;
 import com.disasterrelief.commandcenter.domain.command.SendCommandToTeamCommand;
 import com.disasterrelief.commandcenter.domain.command.AcknowledgeCommandCommand;
-import com.disasterrelief.commandcenter.domain.event.DomainEvent;
+import com.disasterrelief.core.event.DomainEvent;
 import com.disasterrelief.commandcenter.infrastructure.store.EventStore;
 import org.springframework.stereotype.Service;
 

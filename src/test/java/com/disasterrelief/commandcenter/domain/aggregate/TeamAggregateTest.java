@@ -2,14 +2,13 @@ package com.disasterrelief.commandcenter.domain.aggregate;
 
 import com.disasterrelief.commandcenter.domain.command.CreateTeamCommand;
 import com.disasterrelief.commandcenter.domain.entity.TeamMember;
-import com.disasterrelief.commandcenter.domain.event.DomainEvent;
+import com.disasterrelief.core.event.DomainEvent;
 import com.disasterrelief.commandcenter.domain.event.TeamCreatedEvent;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 

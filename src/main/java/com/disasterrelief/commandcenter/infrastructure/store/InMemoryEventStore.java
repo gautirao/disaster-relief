@@ -1,6 +1,6 @@
 package com.disasterrelief.commandcenter.infrastructure.store;
 
-import com.disasterrelief.commandcenter.domain.event.DomainEvent;
+import com.disasterrelief.core.event.DomainEvent;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -19,5 +19,10 @@ public class InMemoryEventStore implements EventStore {
     @Override
     public void append(DomainEvent event) {
         store.computeIfAbsent(event.aggregateId(), k -> new ArrayList<>()).add(event);
+    }
+
+    @Override
+    public List<DomainEvent> getAllEvents() {
+        return store.values().stream().flatMap(Collection::stream).toList();
     }
 }

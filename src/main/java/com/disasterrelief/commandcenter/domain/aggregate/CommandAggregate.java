@@ -4,6 +4,7 @@ import com.disasterrelief.commandcenter.domain.command.SendCommandToTeamCommand;
 import com.disasterrelief.commandcenter.domain.command.AcknowledgeCommandCommand;
 import com.disasterrelief.commandcenter.domain.event.*;
 import com.disasterrelief.commandcenter.domain.valueobject.CommandStatus;
+import com.disasterrelief.core.event.DomainEvent;
 
 import java.time.Instant;
 import java.util.*;
@@ -49,8 +50,11 @@ public class CommandAggregate {
                 command.commandId(),
                 command.teamId(),
                 command.message(),
+                Instant.now(),
                 command.deadline(),
-                Instant.now()
+                command.issuedBy(),
+                command.expectedAcknowledgerIds()
+
         ));
     }
 
