@@ -19,8 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -70,11 +69,23 @@ class CommandSagaTest {
 
     @Nested
     class CompensationTests {
+        class TestCompensationHandler implements CompensationHandler<UUID> {
+            boolean called = false;
+            UUID compensatedId = null;
+            String compensatedReason = null;
+
+            @Override
+            public void compensate(UUID sagaId, String reason) {
+                called = true;
+                compensatedId = sagaId;
+                compensatedReason = reason;
+            }
+        }
+
 
         @Test
         void timeoutTriggersCompensation() {
-            @SuppressWarnings("unchecked")
-            CompensationHandler<UUID> mockHandler = (CompensationHandler<UUID>) mock(CompensationHandler.class);
+            var testHandler = new TestCompensationHandler();
 
             var saga = CommandSagaTestBuilder.builder()
                     .commandId(commandId)
@@ -82,13 +93,15 @@ class CommandSagaTest {
                     .expectedAcknowledgers(expectedAcknowledgers)
                     .deadline(now.minusSeconds(60))
                     .clock(fixedClock)
-                    .compensationHandler(mockHandler)
+                    .compensationHandler(testHandler)
                     .build();
 
             saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
 
             assertThat(saga.getStatus()).isEqualTo(SagaStatus.COMPENSATED);
-            verify(mockHandler).compensate(eq(saga.getId()), any());
+            assertThat(testHandler.called).isTrue();
+            assertThat(testHandler.compensatedId).isEqualTo(saga.getId());
+            assertThat(testHandler.compensatedReason).isNotNull();
         }
     }
 
