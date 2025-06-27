@@ -15,8 +15,8 @@ public record CreateTeamCommand(UUID teamId, String name, List<TeamMember> membe
       throw new IllegalArgumentException("Members required");
     if (issuedBy == null) throw new IllegalArgumentException("IssuedBy required");
 
-    Set<UUID> ids = members.stream().map(TeamMember::getMemberId).collect(Collectors.toSet());
-    if (ids.size() != members.size())
+    long distinctCount = members.stream().map(TeamMember::getMemberId).distinct().count();
+    if (distinctCount != members.size())
       throw new IllegalArgumentException("Duplicate member IDs not allowed");
   }
 }
