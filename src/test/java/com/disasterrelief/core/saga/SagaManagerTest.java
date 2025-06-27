@@ -4,12 +4,14 @@ import com.disasterrelief.commandcenter.domain.event.CommandAcknowledgedEvent;
 import com.disasterrelief.commandcenter.domain.event.CommandIssuedEvent;
 import com.disasterrelief.commandcenter.domain.valueobject.Message;
 import com.disasterrelief.commandcenter.saga.CommandSaga;
+import com.disasterrelief.commandcenter.saga.CommandSagaTestBuilder;
 import com.disasterrelief.commandcenter.saga.SagaStatus;
 import com.disasterrelief.core.event.DomainEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.*;
 import java.util.function.Function;
@@ -27,6 +29,7 @@ class SagaManagerTest {
     private UUID member2;
     private Set<UUID> expectedAcknowledgers;
     private Instant deadline;
+    private Clock clock;
 
     @BeforeEach
     void setup() {
@@ -37,6 +40,7 @@ class SagaManagerTest {
 
         expectedAcknowledgers = Set.of(member1, member2);
         deadline = Instant.now().plusSeconds(3600);
+        clock = Clock.systemUTC();
 
         Function<DomainEvent, UUID> sagaIdExtractor = event -> {
             if (event instanceof CommandIssuedEvent issued) {
@@ -47,15 +51,22 @@ class SagaManagerTest {
             return null;
         };
 
-        Function<UUID, CommandSaga> sagaFactory = id -> new CommandSaga(id, teamId, expectedAcknowledgers, deadline);
+        Function<UUID, CommandSaga> sagaFactory = id -> CommandSagaTestBuilder.builder()
+                .commandId(id)
+                .teamId(teamId)
+                .expectedAcknowledgers(expectedAcknowledgers)
+                .deadline(deadline)
+                .clock(clock)
+                .build();
+
         Predicate<DomainEvent> isStartingEvent = event -> event instanceof CommandIssuedEvent;
 
-        sagaManager = new SagaManager<>(sagaIdExtractor, sagaFactory,isStartingEvent);
+        sagaManager = new SagaManager<>(sagaIdExtractor, sagaFactory, isStartingEvent);
     }
 
-    // Helper methods to create events
     private CommandIssuedEvent createCommandIssuedEvent(UUID cmdId, Instant deadline) {
-        Instant now = Instant.now();
+        // Given: a valid issued command event
+        Instant now = Instant.now(clock);
         return new CommandIssuedEvent(
                 cmdId,
                 teamId,
@@ -68,11 +79,12 @@ class SagaManagerTest {
     }
 
     private CommandAcknowledgedEvent createCommandAcknowledgedEvent(UUID cmdId, UUID member) {
+        // Given: an acknowledgement event from a member
         return new CommandAcknowledgedEvent(
                 cmdId,
                 teamId,
                 member,
-                Instant.now()
+                Instant.now(clock)
         );
     }
 
@@ -81,41 +93,43 @@ class SagaManagerTest {
 
         @Test
         void sagaStartsAndCompletesSuccessfully() {
-            // Given a CommandIssuedEvent, saga starts
+            // Given: a command is issued
             CommandIssuedEvent issuedEvent = createCommandIssuedEvent(commandId, deadline);
             sagaManager.handleEvent(issuedEvent);
 
-            // Saga is active and pending
+            // Then: the saga is started and is active
             Map<UUID, CommandSaga> activeSagas = sagaManager.getActiveSagas();
             assertEquals(1, activeSagas.size());
             CommandSaga saga = activeSagas.get(commandId);
             assertNotNull(saga);
             assertFalse(saga.isCompleted());
 
-            // When first member acknowledges, saga remains pending
+            // When: one member acknowledges
             sagaManager.handleEvent(createCommandAcknowledgedEvent(commandId, member1));
+
+            // Then: saga is still pending
             assertFalse(saga.isCompleted());
 
-            // When all expected members acknowledge, saga completes and is removed
+            // When: all expected members acknowledge
             sagaManager.handleEvent(createCommandAcknowledgedEvent(commandId, member2));
+
+            // Then: saga completes and is removed
             assertTrue(saga.isCompleted());
             assertFalse(sagaManager.getActiveSagas().containsKey(commandId));
         }
 
         @Test
         void sagaReplaysEvents() {
-            // Given a sequence of past events (CommandIssuedEvent + acknowledgments)
+            // Given: a history of valid events
             CommandIssuedEvent issuedEvent = createCommandIssuedEvent(commandId, deadline);
             CommandAcknowledgedEvent ack1 = createCommandAcknowledgedEvent(commandId, member1);
             CommandAcknowledgedEvent ack2 = createCommandAcknowledgedEvent(commandId, member2);
 
+            // When: events are replayed
             List<DomainEvent> pastEvents = List.of(issuedEvent, ack1, ack2);
-
-            // When events are replayed
             sagaManager.replayEvents(pastEvents);
 
-            // Then saga reconstructs state and completes
-            // Then saga is removed from active sagas
+            // Then: saga completes and is removed
             assertTrue(sagaManager.getActiveSagas().isEmpty());
         }
     }
@@ -125,59 +139,56 @@ class SagaManagerTest {
 
         @Test
         void ignoresEventsForOtherCommands() {
-            // Given an event with an unrelated commandId
+            // Given: an event with unrelated command ID
             UUID otherCommandId = UUID.randomUUID();
             CommandAcknowledgedEvent unrelatedAck = createCommandAcknowledgedEvent(otherCommandId, member1);
 
-            // When handled by SagaManager
+            // When: event is handled
             sagaManager.handleEvent(unrelatedAck);
 
-            // Then no saga is created or updated
-            // Then active saga list remains empty
+            // Then: no saga is created
             assertTrue(sagaManager.getActiveSagas().isEmpty());
         }
 
         @Test
         void duplicateAcknowledgementsDoNotAffectSaga() {
-            // Given a member acknowledges multiple times
+            // Given: a saga started with a valid issued event
             CommandIssuedEvent issuedEvent = createCommandIssuedEvent(commandId, deadline);
             sagaManager.handleEvent(issuedEvent);
             CommandSaga saga = sagaManager.getActiveSagas().get(commandId);
             assertNotNull(saga);
 
+            // When: same member acknowledges multiple times
             CommandAcknowledgedEvent ack = createCommandAcknowledgedEvent(commandId, member1);
-
-            // When saga handles duplicate acknowledgments
             sagaManager.handleEvent(ack);
             sagaManager.handleEvent(ack);
 
-            // Then it does not affect saga status or acknowledged list redundantly
+            // Then: only one acknowledgment is counted
             assertEquals(1, saga.getAcknowledgedBy().size());
             assertFalse(saga.isCompleted());
         }
 
         @Test
         void missingExpectedAcknowledgerKeepsSagaPending() {
-            // Given one expected acknowledger never acknowledges within deadline
+            // Given: saga started with only partial acknowledgements
             CommandIssuedEvent issuedEvent = createCommandIssuedEvent(commandId, deadline);
             sagaManager.handleEvent(issuedEvent);
             CommandSaga saga = sagaManager.getActiveSagas().get(commandId);
             assertNotNull(saga);
 
-            // When only one member acknowledges within deadline
+            // When: only one member acknowledges
             sagaManager.handleEvent(createCommandAcknowledgedEvent(commandId, member1));
 
-            // Then saga remains in pending status
+            // Then: saga remains pending
             assertEquals(SagaStatus.PENDING, saga.getStatus());
             assertFalse(saga.isCompleted());
         }
 
         @Test
         void nullOrInvalidEventsAreIgnored() {
-            // Given null event
+            // When: null or unknown event is handled
             sagaManager.handleEvent(null);
 
-            // Given event with null saga id
             DomainEvent unknownEvent = new DomainEvent() {
                 @Override
                 public UUID aggregateId() {
@@ -186,55 +197,68 @@ class SagaManagerTest {
 
                 @Override
                 public Instant occurredAt() {
-                    return Instant.now();
+                    return Instant.now(clock);
                 }
             };
             sagaManager.handleEvent(unknownEvent);
 
-            // Then no saga is created or crash occurs
+            // Then: no saga is created or crash occurs
             assertTrue(sagaManager.getActiveSagas().isEmpty());
         }
 
         @Test
-        void partialAcknowledgementBeyondDeadlineCompensatesSaga() throws InterruptedException {
-            // Given some acknowledgements arrive after deadline (simulate by past deadline)
-            Instant pastDeadline = Instant.now().minusSeconds(1);
-            CommandSaga saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, pastDeadline);
+        void partialAcknowledgementBeyondDeadlineCompensatesSaga() {
+            // Given: saga with past deadline
+            Instant pastDeadline = Instant.now(clock).minusSeconds(1);
+            CommandSaga saga = CommandSagaTestBuilder.builder()
+                    .commandId(commandId)
+                    .teamId(teamId)
+                    .expectedAcknowledgers(expectedAcknowledgers)
+                    .deadline(pastDeadline)
+                    .clock(clock)
+                    .build();
 
-            // When saga handles late acknowledgements
+            // When: one member acknowledges
             saga.handle(createCommandAcknowledgedEvent(commandId, member1));
 
-            // Then saga is compensated due to timeout
+            // Then: saga is compensated
             assertEquals(SagaStatus.COMPENSATED, saga.getStatus());
 
-            // Optional: additional late acks ignored or do not affect saga status
+            // When: another late acknowledgment arrives
             saga.handle(createCommandAcknowledgedEvent(commandId, member2));
+
+            // Then: saga remains compensated
             assertEquals(SagaStatus.COMPENSATED, saga.getStatus());
         }
 
         @Test
         void emptyExpectedAcknowledgerSetThrowsException() {
-            // Given CommandIssuedEvent with empty expected acknowledgers set
-            Instant futureDeadline = Instant.now().plusSeconds(3600);
+            // When: creating saga with no expected acknowledgers
+            Instant futureDeadline = Instant.now(clock).plusSeconds(3600);
 
-            // When saga is created
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
-                    new CommandSaga(commandId, teamId, Collections.emptySet(), futureDeadline)
+                    CommandSagaTestBuilder.builder()
+                            .commandId(commandId)
+                            .teamId(teamId)
+                            .expectedAcknowledgers(Collections.emptySet())
+                            .deadline(futureDeadline)
+                            .clock(clock)
+                            .build()
             );
 
-            // Then saga initialization fails with message
+            // Then: exception is thrown with correct message
             assertTrue(ex.getMessage().contains("expectedAcknowledgers must not be null or empty"));
         }
 
         @Test
         void replayingEventsWithMissingIntermediateEventsKeepsSagaIncomplete() {
-            // Given replay of incomplete event stream missing CommandIssuedEvent
+            // Given: only an acknowledgment event, no issued event
             CommandAcknowledgedEvent ack1 = createCommandAcknowledgedEvent(commandId, member1);
 
-            // When replaying events without CommandIssuedEvent
+            // When: replaying incomplete history
             sagaManager.replayEvents(List.of(ack1));
 
-            // Then saga fails to reconstruct or stays incomplete (no saga created)
+            // Then: saga is not reconstructed
             assertTrue(sagaManager.getActiveSagas().isEmpty());
         }
     }

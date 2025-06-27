@@ -1,7 +1,9 @@
 package com.disasterrelief.commandcenter.saga;
 
 import com.disasterrelief.commandcenter.domain.event.CommandAcknowledgedEvent;
+import com.disasterrelief.core.event.SagaCompensatedEvent;
 import com.disasterrelief.core.event.DomainEvent;
+import com.disasterrelief.core.saga.CompensationHandler;
 import com.disasterrelief.core.saga.Saga;
 
 import java.time.Instant;
@@ -17,20 +19,26 @@ public class CommandSaga implements Saga<UUID> {
     private final Set<UUID> expectedAcknowledgers;
     private final Set<UUID> acknowledgedBy = new HashSet<>();
     private final Instant deadline;
+    private final CompensationHandler<UUID> compensationHandler;
 
     private SagaStatus status = SagaStatus.PENDING;
+    private Instant compensationTime;
+    private String compensationReason;
 
-    public CommandSaga(UUID commandId, UUID teamId, Set<UUID> expectedAcknowledgers, Instant deadline) {
+    public CommandSaga(UUID commandId, UUID teamId, Set<UUID> expectedAcknowledgers,
+                       Instant deadline, CompensationHandler<UUID> compensationHandler) {
         if (commandId == null) throw new IllegalArgumentException("commandId must not be null");
         if (teamId == null) throw new IllegalArgumentException("teamId must not be null");
         if (expectedAcknowledgers == null || expectedAcknowledgers.isEmpty())
             throw new IllegalArgumentException("expectedAcknowledgers must not be null or empty");
         if (deadline == null) throw new IllegalArgumentException("deadline must not be null");
+        if (compensationHandler == null) throw new IllegalArgumentException("compensationHandler must not be null");
 
         this.commandId = commandId;
         this.teamId = teamId;
         this.expectedAcknowledgers = Set.copyOf(expectedAcknowledgers);
         this.deadline = deadline;
+        this.compensationHandler = compensationHandler;
     }
 
     @Override
@@ -40,12 +48,18 @@ public class CommandSaga implements Saga<UUID> {
 
     @Override
     public void handle(DomainEvent event) {
-        // Ignore events not related to this saga's commandId
+        if (event == null) return;
+
         if (event instanceof CommandAcknowledgedEvent ack) {
             if (!ack.commandId().equals(commandId)) {
+                return; // ignore unrelated events
+            }
+
+            if (status == SagaStatus.COMPENSATED) {
+                // Late acks after compensation are ignored
                 return;
             }
-            // Only process if still pending
+
             if (status != SagaStatus.PENDING) {
                 return;
             }
@@ -57,20 +71,30 @@ public class CommandSaga implements Saga<UUID> {
             }
         }
 
-        // Check for timeout on every event handling (or could be scheduled)
         checkTimeout();
     }
 
     private void checkTimeout() {
         if (status == SagaStatus.PENDING && Instant.now().isAfter(deadline)) {
-            compensate();
+            compensate("Timeout reached before all acknowledgements.");
         }
     }
 
-    private void compensate() {
+    private void compensate(String reason) {
+        if (status == SagaStatus.COMPENSATED) {
+            return; // already compensated
+        }
         status = SagaStatus.COMPENSATED;
-        System.out.printf("Saga %s timed out. Compensation triggered.%n", commandId);
-        // TODO: add compensation logic like rollback or alerts here
+        compensationTime = Instant.now();
+        compensationReason = reason;
+
+        // Call the compensation handler to do actual work
+        compensationHandler.compensate(commandId, reason);
+
+        // Optionally: emit a SagaCompensatedEvent in your event system
+        // (depends on your event publishing architecture)
+        SagaCompensatedEvent event = new SagaCompensatedEvent(commandId, compensationTime, reason);
+        // publishEvent(event); // <-- implement this if you have an event bus
     }
 
     @Override
@@ -96,5 +120,13 @@ public class CommandSaga implements Saga<UUID> {
 
     public Instant getDeadline() {
         return deadline;
+    }
+
+    public Instant getCompensationTime() {
+        return compensationTime;
+    }
+
+    public String getCompensationReason() {
+        return compensationReason;
     }
 }
