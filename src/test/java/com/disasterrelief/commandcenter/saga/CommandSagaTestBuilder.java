@@ -51,6 +51,6 @@ public class CommandSagaTestBuilder {
     }
 
     public CommandSaga build() {
-        return new CommandSaga(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler);
+        return new CommandSaga(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler,clock);
     }
 }

@@ -6,6 +6,7 @@ import com.disasterrelief.core.event.DomainEvent;
 import com.disasterrelief.core.saga.CompensationHandler;
 import com.disasterrelief.core.saga.Saga;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.HashSet;
@@ -20,25 +21,42 @@ public class CommandSaga implements Saga<UUID> {
     private final Set<UUID> acknowledgedBy = new HashSet<>();
     private final Instant deadline;
     private final CompensationHandler<UUID> compensationHandler;
+    private final Clock clock;
 
     private SagaStatus status = SagaStatus.PENDING;
     private Instant compensationTime;
     private String compensationReason;
 
-    public CommandSaga(UUID commandId, UUID teamId, Set<UUID> expectedAcknowledgers,
-                       Instant deadline, CompensationHandler<UUID> compensationHandler) {
+    // ✅ Primary constructor for full control (used in tests or advanced scenarios)
+    public CommandSaga(UUID commandId,
+                       UUID teamId,
+                       Set<UUID> expectedAcknowledgers,
+                       Instant deadline,
+                       CompensationHandler<UUID> compensationHandler,
+                       Clock clock) {
         if (commandId == null) throw new IllegalArgumentException("commandId must not be null");
         if (teamId == null) throw new IllegalArgumentException("teamId must not be null");
         if (expectedAcknowledgers == null || expectedAcknowledgers.isEmpty())
             throw new IllegalArgumentException("expectedAcknowledgers must not be null or empty");
         if (deadline == null) throw new IllegalArgumentException("deadline must not be null");
         if (compensationHandler == null) throw new IllegalArgumentException("compensationHandler must not be null");
+        if (clock == null) throw new IllegalArgumentException("clock must not be null");
 
         this.commandId = commandId;
         this.teamId = teamId;
         this.expectedAcknowledgers = Set.copyOf(expectedAcknowledgers);
         this.deadline = deadline;
         this.compensationHandler = compensationHandler;
+        this.clock = clock;
+    }
+
+    // ✅ Convenience constructor for production usage
+    public CommandSaga(UUID commandId,
+                       UUID teamId,
+                       Set<UUID> expectedAcknowledgers,
+                       Instant deadline,
+                       CompensationHandler<UUID> compensationHandler) {
+        this(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler, Clock.systemUTC());
     }
 
     @Override
@@ -51,18 +69,9 @@ public class CommandSaga implements Saga<UUID> {
         if (event == null) return;
 
         if (event instanceof CommandAcknowledgedEvent ack) {
-            if (!ack.commandId().equals(commandId)) {
-                return; // ignore unrelated events
-            }
-
-            if (status == SagaStatus.COMPENSATED) {
-                // Late acks after compensation are ignored
-                return;
-            }
-
-            if (status != SagaStatus.PENDING) {
-                return;
-            }
+            if (!ack.commandId().equals(commandId)) return;
+            if (status == SagaStatus.COMPENSATED) return;
+            if (status != SagaStatus.PENDING) return;
 
             acknowledgedBy.add(ack.memberId());
 
@@ -73,29 +82,29 @@ public class CommandSaga implements Saga<UUID> {
 
         checkTimeout();
     }
-
     private void checkTimeout() {
-        if (status == SagaStatus.PENDING && Instant.now().isAfter(deadline)) {
-            compensate("Timeout reached before all acknowledgements.");
+        if (status == SagaStatus.PENDING && Instant.now(clock).isAfter(deadline)) {
+            compensateDueToTimeout();
         }
+    }
+
+    private void compensateDueToTimeout() {
+        compensate("Timeout reached before all acknowledgements.");
     }
 
     private void compensate(String reason) {
-        if (status == SagaStatus.COMPENSATED) {
-            return; // already compensated
-        }
-        status = SagaStatus.COMPENSATED;
-        compensationTime = Instant.now();
-        compensationReason = reason;
+        if (status == SagaStatus.COMPENSATED) return;
 
-        // Call the compensation handler to do actual work
+        status = SagaStatus.COMPENSATED;
+        compensationTime = Instant.now(clock);
+        compensationReason = reason;
         compensationHandler.compensate(commandId, reason);
 
-        // Optionally: emit a SagaCompensatedEvent in your event system
-        // (depends on your event publishing architecture)
+        // Optional: emit SagaCompensatedEvent
         SagaCompensatedEvent event = new SagaCompensatedEvent(commandId, compensationTime, reason);
-        // publishEvent(event); // <-- implement this if you have an event bus
+        // publishEvent(event);
     }
+
 
     @Override
     public boolean isCompleted() {
