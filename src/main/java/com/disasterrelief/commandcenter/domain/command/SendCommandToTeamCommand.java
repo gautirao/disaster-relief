@@ -14,4 +14,22 @@ public record SendCommandToTeamCommand(
         Message message,
         Instant deadline
 
-) {}
+){
+    public SendCommandToTeamCommand {
+        if (commandId == null) {
+            throw new IllegalArgumentException("commandId must not be null");
+        }
+        if (teamId == null) {
+            throw new IllegalArgumentException("teamId must not be null");
+        }
+        if (message == null) {
+            throw new IllegalArgumentException("message must not be null");
+        }
+        if (deadline == null) {
+            throw new IllegalArgumentException("deadline must not be null");
+        }
+        if (deadline.isBefore(Instant.now())) {
+            throw new IllegalArgumentException("deadline must be in the future");
+        }
+    }
+}
