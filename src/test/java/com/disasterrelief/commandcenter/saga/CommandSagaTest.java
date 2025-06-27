@@ -18,142 +18,180 @@ class CommandSagaTest {
     private UUID member1;
     private UUID member2;
     private Set<UUID> expectedAcknowledgers;
-    private CommandSaga saga;
+
+    private Instant futureDeadline;
+    private Instant pastDeadline;
+    private Instant now;
 
     @BeforeEach
-    void setUp() {
-        // Given: Common setup for all tests
+    void setup() {
         commandId = UUID.randomUUID();
         teamId = UUID.randomUUID();
         member1 = UUID.randomUUID();
         member2 = UUID.randomUUID();
+
         expectedAcknowledgers = Set.of(member1, member2);
-        saga = new CommandSaga(commandId, teamId, expectedAcknowledgers);
+
+        now = Instant.now();
+        futureDeadline = now.plusSeconds(60 * 60); // 1 hour ahead
+        pastDeadline = now.minusSeconds(60 * 60);  // 1 hour ago
     }
 
     @Nested
-    class SuccessScenarios {
+    class SuccessfulScenarios {
 
-        @Test
-        void initialState() {
-            // Given: A newly created saga (setup already done)
+        private CommandSaga saga;
 
-            // When: We inspect the saga state
-
-            // Then: It should be PENDING, no acknowledgments yet
-            assertEquals(SagaStatus.PENDING, saga.getStatus());
-            assertFalse(saga.isCompleted());
-            assertTrue(saga.getAcknowledgedBy().isEmpty());
-            assertEquals(commandId, saga.getCommandId());
-            assertEquals(teamId, saga.getTeamId());
+        @BeforeEach
+        void initSaga() {
+            saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, futureDeadline);
         }
 
         @Test
-        void singleAcknowledgmentDoesNotCompleteSaga() {
-            // Given: A new saga and one expected acknowledger
+        void sagaCompletesWhenAllMembersAcknowledge() {
+            // Given: a new CommandSaga with expected acknowledgers
 
-            // When: One acknowledgment event is handled
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, Instant.now()));
+            // When: member1 acknowledges
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
 
-            // Then: Saga status is still PENDING
+            // Then: saga is still PENDING and member1 is recorded
             assertEquals(SagaStatus.PENDING, saga.getStatus());
+            assertTrue(saga.getAcknowledgedBy().contains(member1));
             assertFalse(saga.isCompleted());
-            assertEquals(Set.of(member1), saga.getAcknowledgedBy());
-        }
 
-        @Test
-        void allAcknowledgmentsCompleteSaga() {
-            // Given: A saga with two expected acknowledgers
+            // When: member2 acknowledges
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member2, now));
 
-            // When: Both acknowledgers send acknowledgment events
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, Instant.now()));
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member2, Instant.now()));
-
-            // Then: Saga status is COMPLETED and all acknowledged
+            // Then: saga is COMPLETED and both members are acknowledged
             assertEquals(SagaStatus.COMPLETED, saga.getStatus());
             assertTrue(saga.isCompleted());
-            assertEquals(expectedAcknowledgers, saga.getAcknowledgedBy());
+            assertTrue(saga.getAcknowledgedBy().containsAll(expectedAcknowledgers));
         }
 
         @Test
-        void duplicateAcknowledgmentsDoNotAffectState() {
-            // Given: A saga with expected acknowledgers
+        void noCompensationIfAcknowledgedBeforeTimeout() {
+            // Given: a saga with deadline in the future
 
-            // When: The same member acknowledges twice
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, Instant.now()));
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, Instant.now()));
+            // When: all acknowledgments received before deadline
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member2, now));
 
-            // Then: Saga status remains PENDING, acknowledgment counted once
-            assertEquals(SagaStatus.PENDING, saga.getStatus());
-            assertEquals(Set.of(member1), saga.getAcknowledgedBy());
-        }
-
-        @Test
-        void toStringContainsImportantInfo() {
-            // Given: A saga with an acknowledgment
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, Instant.now()));
-
-            // When: We call toString()
-            String str = saga.toString();
-
-            // Then: It should contain commandId, teamId, and member1 UUID strings
-            assertTrue(str.contains(commandId.toString()));
-            assertTrue(str.contains(teamId.toString()));
-            assertTrue(str.contains(member1.toString()));
+            // Then: saga is COMPLETED, no compensation triggered
+            assertEquals(SagaStatus.COMPLETED, saga.getStatus());
         }
     }
 
     @Nested
-    class FailureAndEdgeCases {
+    class UnsuccessfulScenarios {
+
+        private CommandSaga saga;
+
+        @BeforeEach
+        void initSaga() {
+            saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, futureDeadline);
+        }
 
         @Test
         void ignoreAcknowledgmentsForOtherCommands() {
-            // Given: A saga for a specific commandId
+            // Given: a saga for a specific commandId
+
+            // When: an acknowledgment event comes for a different commandId
             UUID otherCommandId = UUID.randomUUID();
+            saga.handle(new CommandAcknowledgedEvent(otherCommandId, teamId, member1, now));
 
-            // When: An acknowledgment event comes for a different commandId
-            saga.handle(new CommandAcknowledgedEvent(otherCommandId, teamId, member1, Instant.now()));
-
-            // Then: Saga ignores it, remains PENDING with no acknowledgments
+            // Then: saga ignores it, remains PENDING with no acknowledgments
             assertEquals(SagaStatus.PENDING, saga.getStatus());
             assertTrue(saga.getAcknowledgedBy().isEmpty());
         }
 
         @Test
-        void handleTimeoutTransitionsToFailedIfNotCompleted() {
-            // Given: A saga that is still PENDING
+        void timeoutTriggersCompensation() {
+            // Given: a saga with a deadline in the past (already expired)
+            CommandSaga sagaWithExpiredDeadline = new CommandSaga(commandId, teamId, expectedAcknowledgers, pastDeadline);
 
-            // When: Timeout occurs
-            saga.handleTimeout();
+            // When: any event is handled (or none), timeout is checked
+            sagaWithExpiredDeadline.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
 
-            // Then: Saga status transitions to FAILED
-            assertEquals(SagaStatus.FAILED, saga.getStatus());
-            assertFalse(saga.isCompleted());
+            // Then: saga is COMPENSATED due to timeout
+            assertEquals(SagaStatus.COMPENSATED, sagaWithExpiredDeadline.getStatus());
+            assertFalse(sagaWithExpiredDeadline.isCompleted());
         }
+    }
+
+    @Nested
+    class EdgeCases {
 
         @Test
-        void handleTimeoutDoesNothingIfAlreadyCompleted() {
-            // Given: A saga that is COMPLETED
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, Instant.now()));
-            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member2, Instant.now()));
-            assertTrue(saga.isCompleted());
+        void duplicateAcknowledgmentFromSameMemberIgnored() {
+            // Given: a saga with future deadline
+            CommandSaga saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, futureDeadline);
 
-            // When: Timeout occurs after completion
-            saga.handleTimeout();
+            // When: same member acknowledges multiple times
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now.plusSeconds(10)));
 
-            // Then: Saga remains COMPLETED, no change
-            assertEquals(SagaStatus.COMPLETED, saga.getStatus());
-        }
-
-        @Test
-        void compensateDoesNotChangeStatus() {
-            // Given: A saga in PENDING state
-
-            // When: compensate is called (placeholder logic)
-            saga.compensate();
-
-            // Then: Saga status remains PENDING
+            // Then: acknowledgedBy set should contain member1 only once, status PENDING
+            assertEquals(1, saga.getAcknowledgedBy().size());
+            assertTrue(saga.getAcknowledgedBy().contains(member1));
             assertEquals(SagaStatus.PENDING, saga.getStatus());
+        }
+
+        @Test
+        void acknowledgmentAfterCompletionDoesNotChangeStatus() {
+            // Given: a saga that is already completed
+            CommandSaga saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, futureDeadline);
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member2, now));
+            assertEquals(SagaStatus.COMPLETED, saga.getStatus());
+
+            // When: an acknowledgment comes in after completion (should be ignored)
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, UUID.randomUUID(), now.plusSeconds(10)));
+
+            // Then: saga status remains COMPLETED and acknowledgedBy unchanged
+            assertEquals(SagaStatus.COMPLETED, saga.getStatus());
+            assertEquals(expectedAcknowledgers.size(), saga.getAcknowledgedBy().size());
+        }
+
+        @Test
+        void createSagaWithEmptyAcknowledgersThrows() {
+            // Given: an empty expectedAcknowledgers set
+            Set<UUID> emptySet = Set.of();
+
+            // Then: saga creation throws IllegalArgumentException
+            assertThrows(IllegalArgumentException.class, () ->
+                    new CommandSaga(commandId, teamId, emptySet, futureDeadline));
+        }
+
+        @Test
+        void deadlineExactlyNowTriggersTimeout() {
+            // Given: saga with deadline exactly now
+            CommandSaga saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, now);
+
+            // When: handle any acknowledgment
+            saga.handle(new CommandAcknowledgedEvent(commandId, teamId, member1, now));
+
+            // Then: saga is COMPENSATED due to deadline reached
+            assertEquals(SagaStatus.COMPENSATED, saga.getStatus());
+        }
+
+        @Test
+        void handleNullOrUnknownEventTypeIgnored() {
+            // Given: a saga with future deadline
+            CommandSaga saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, futureDeadline);
+
+            // When: handling null event or unknown event class
+            saga.handle(null);
+
+            // Unknown event class
+            class UnknownEvent implements com.disasterrelief.core.event.DomainEvent {
+                @Override public java.util.UUID aggregateId() { return commandId; }
+                @Override public java.time.Instant occurredAt() { return now; }
+            }
+            saga.handle(new UnknownEvent());
+
+            // Then: saga status and acknowledgers unchanged
+            assertEquals(SagaStatus.PENDING, saga.getStatus());
+            assertTrue(saga.getAcknowledgedBy().isEmpty());
         }
     }
 }
