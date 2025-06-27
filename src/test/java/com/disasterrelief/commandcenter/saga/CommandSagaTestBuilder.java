@@ -1,12 +1,17 @@
 package com.disasterrelief.commandcenter.saga;
 
+import com.disasterrelief.commandcenter.persistence.PersistedEventRepository;
+import com.disasterrelief.core.eventstore.PersistedEvent;
 import com.disasterrelief.core.saga.CompensationHandler;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 
+/**
+ * Fluent builder for CommandSaga used in unit tests.
+ */
 public class CommandSagaTestBuilder {
 
     private UUID commandId = UUID.randomUUID();
@@ -15,6 +20,7 @@ public class CommandSagaTestBuilder {
     private Instant deadline = Instant.now().plusSeconds(3600);
     private Clock clock = Clock.systemUTC();
     private CompensationHandler<UUID> compensationHandler = (sagaId, reason) -> {};
+    private PersistedEventRepository persistedEventRepository = new InMemoryRepoStub();
 
     public static CommandSagaTestBuilder builder() {
         return new CommandSagaTestBuilder();
@@ -45,12 +51,44 @@ public class CommandSagaTestBuilder {
         return this;
     }
 
-    public CommandSagaTestBuilder compensationHandler(CompensationHandler<UUID> handler) {
-        this.compensationHandler = handler;
+    public CommandSagaTestBuilder compensationHandler(CompensationHandler<UUID> compensationHandler) {
+        this.compensationHandler = compensationHandler;
+        return this;
+    }
+
+    public CommandSagaTestBuilder persistedEventRepository(PersistedEventRepository repo) {
+        this.persistedEventRepository = repo;
         return this;
     }
 
     public CommandSaga build() {
-        return new CommandSaga(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler,clock);
+        return new CommandSaga(
+                commandId,
+                teamId,
+                expectedAcknowledgers,
+                deadline,
+                compensationHandler,
+                clock,
+                persistedEventRepository
+        );
+    }
+
+    /**
+     * In-memory default stub repo to avoid nulls for tests that don’t assert event persistence.
+     */
+    private static class InMemoryRepoStub implements PersistedEventRepository {
+        private final List<PersistedEvent> store = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void save(PersistedEvent event) {
+            store.add(event);
+        }
+
+        @Override
+        public List<PersistedEvent> findBySagaId(UUID sagaId) {
+            return store.stream()
+                    .filter(e -> sagaId.equals(e.getSagaId()))
+                    .toList();
+        }
     }
 }

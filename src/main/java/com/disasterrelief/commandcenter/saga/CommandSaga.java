@@ -1,17 +1,17 @@
 package com.disasterrelief.commandcenter.saga;
 
 import com.disasterrelief.commandcenter.domain.event.CommandAcknowledgedEvent;
+import com.disasterrelief.commandcenter.persistence.PersistedEventRepository;
 import com.disasterrelief.core.event.SagaCompensatedEvent;
 import com.disasterrelief.core.event.DomainEvent;
+import com.disasterrelief.core.eventstore.PersistedEvent;
 import com.disasterrelief.core.saga.CompensationHandler;
 import com.disasterrelief.core.saga.Saga;
+import com.disasterrelief.util.EventSerializationUtil;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 public class CommandSaga implements Saga<UUID> {
 
@@ -26,6 +26,7 @@ public class CommandSaga implements Saga<UUID> {
     private SagaStatus status = SagaStatus.PENDING;
     private Instant compensationTime;
     private String compensationReason;
+    private final PersistedEventRepository persistedEventRepository;
 
     // ✅ Primary constructor for full control (used in tests or advanced scenarios)
     public CommandSaga(UUID commandId,
@@ -33,7 +34,8 @@ public class CommandSaga implements Saga<UUID> {
                        Set<UUID> expectedAcknowledgers,
                        Instant deadline,
                        CompensationHandler<UUID> compensationHandler,
-                       Clock clock) {
+                       Clock clock, PersistedEventRepository persistedEventRepository) {
+        this.persistedEventRepository = persistedEventRepository;
         if (commandId == null) throw new IllegalArgumentException("commandId must not be null");
         if (teamId == null) throw new IllegalArgumentException("teamId must not be null");
         if (expectedAcknowledgers == null || expectedAcknowledgers.isEmpty())
@@ -55,8 +57,8 @@ public class CommandSaga implements Saga<UUID> {
                        UUID teamId,
                        Set<UUID> expectedAcknowledgers,
                        Instant deadline,
-                       CompensationHandler<UUID> compensationHandler) {
-        this(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler, Clock.systemUTC());
+                       CompensationHandler<UUID> compensationHandler, PersistedEventRepository persistedEventRepository) {
+        this(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler, Clock.systemUTC(), persistedEventRepository);
     }
 
     @Override
@@ -68,16 +70,33 @@ public class CommandSaga implements Saga<UUID> {
     public void handle(DomainEvent event) {
         if (event == null) return;
 
+        // Persist the event first
+        try {
+            String json = EventSerializationUtil.serialize(event);
+            PersistedEvent persistedEvent = PersistedEvent.builder()
+                    .id(UUID.randomUUID())
+                    .sagaId(commandId)
+                    .eventType(event.getClass().getName())
+                    .eventPayload(json)
+                    .createdAt(Instant.now(clock))
+                    .build();
+            persistedEventRepository.save(persistedEvent);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to persist event", e);
+        }
+
         if (event instanceof CommandAcknowledgedEvent ack) {
             if (!ack.commandId().equals(commandId)) return;
             if (status == SagaStatus.COMPENSATED) return;
             if (status != SagaStatus.PENDING) return;
+            if (expectedAcknowledgers.contains(ack.memberId())) {
+                acknowledgedBy.add(ack.memberId());
 
-            acknowledgedBy.add(ack.memberId());
-
-            if (acknowledgedBy.containsAll(expectedAcknowledgers)) {
-                status = SagaStatus.COMPLETED;
+                if (acknowledgedBy.containsAll(expectedAcknowledgers)) {
+                    status = SagaStatus.COMPLETED;
+                }
             }
+
         }
 
         checkTimeout();
@@ -104,6 +123,31 @@ public class CommandSaga implements Saga<UUID> {
         SagaCompensatedEvent event = new SagaCompensatedEvent(commandId, compensationTime, reason);
         // publishEvent(event);
     }
+
+    public static CommandSaga loadFromEvents(UUID commandId,
+                                             UUID teamId,
+                                             Set<UUID> expectedAcknowledgers,
+                                             Instant deadline,
+                                             CompensationHandler<UUID> compensationHandler,
+                                             PersistedEventRepository repository,
+                                             Clock clock) {
+
+        CommandSaga saga = new CommandSaga(commandId, teamId, expectedAcknowledgers, deadline, compensationHandler, clock, repository);
+
+        List<PersistedEvent> events = repository.findBySagaId(commandId);
+
+        for (PersistedEvent persistedEvent : events) {
+            try {
+                Class<?> clazz = Class.forName(persistedEvent.getEventType());
+                DomainEvent event = (DomainEvent) EventSerializationUtil.deserialize(persistedEvent.getEventPayload(), clazz);
+                saga.handle(event); // replay each event to rebuild state
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to replay persisted event", e);
+            }
+        }
+        return saga;
+    }
+
 
 
     @Override
