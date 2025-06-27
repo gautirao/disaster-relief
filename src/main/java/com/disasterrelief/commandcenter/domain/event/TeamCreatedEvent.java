@@ -11,6 +11,7 @@ public record TeamCreatedEvent(
         UUID teamId,
         String name,
         List<TeamMember> members,
+        UUID issuedBy,
         Instant occurredAt
 ) implements DomainEvent {
 
