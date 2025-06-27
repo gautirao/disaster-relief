@@ -7,16 +7,34 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-/** Command to create a new team. */
-public record CreateTeamCommand(UUID teamId, String name, List<TeamMember> members, UUID issuedBy) {
+public record CreateTeamCommand(
+        UUID teamId,
+        String name,
+        List<TeamMember> members,
+        UUID issuedBy
+) {
   public CreateTeamCommand {
-    if (name == null || name.isBlank()) throw new IllegalArgumentException("Name required");
-    if (members == null || members.isEmpty())
-      throw new IllegalArgumentException("Members required");
-    if (issuedBy == null) throw new IllegalArgumentException("IssuedBy required");
+    if (teamId == null) {
+      throw new IllegalArgumentException("teamId must not be null");
+    }
+    if (name == null || name.isBlank()) {
+      throw new IllegalArgumentException("Team name must not be null or blank");
+    }
+    if (members == null) {
+      throw new IllegalArgumentException("members must not be null");
+    }
+    if (members.isEmpty()) {
+      throw new IllegalArgumentException("Team members must not be empty");
+    }
+    if (issuedBy == null) {
+      throw new IllegalArgumentException("issuedBy must not be null");
+    }
 
-    long distinctCount = members.stream().map(TeamMember::getMemberId).distinct().count();
-    if (distinctCount != members.size())
-      throw new IllegalArgumentException("Duplicate member IDs not allowed");
+    Set<UUID> uniqueIds = members.stream()
+            .map(TeamMember::getMemberId)
+            .collect(Collectors.toSet());
+    if (uniqueIds.size() != members.size()) {
+      throw new IllegalArgumentException("Duplicate team member IDs are not allowed");
+    }
   }
 }
